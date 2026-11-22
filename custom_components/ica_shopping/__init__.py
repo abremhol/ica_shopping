@@ -10,24 +10,27 @@ _LOGGER = logging.getLogger(__name__)
 
 async def _trigger_sensor_update(hass, list_id):
     registry = entity_registry.async_get(hass)  # ✅ utan await
-    target_unique_id = f"shoppinglist_{list_id}"
-    sensor_entity = None
+    target_unique_ids = (
+        f"shoppinglist_{list_id}",
+        f"ica_token_{list_id}",  # Session Status-sensorn
+    )
+    sensor_entities = [
+        entity.entity_id
+        for entity in registry.entities.values()
+        if entity.unique_id in target_unique_ids
+    ]
 
-    for entity in registry.entities.values():
-        if entity.unique_id == target_unique_id:
-            sensor_entity = entity.entity_id
-            break
-
-    if not sensor_entity:
-        _LOGGER.debug("ℹ️ Kunde inte hitta sensor med unique_id %s", target_unique_id)
+    if not sensor_entities:
+        _LOGGER.debug("ℹ️ Kunde inte hitta någon sensor för lista %s", list_id)
         return
 
-    _LOGGER.debug("🔁 Triggar update för %s", sensor_entity)
-    await hass.services.async_call(
-        "homeassistant", "update_entity",
-        {"entity_id": sensor_entity},
-        blocking=True
-    )
+    for sensor_entity in sensor_entities:
+        _LOGGER.debug("🔁 Triggar update för %s", sensor_entity)
+        await hass.services.async_call(
+            "homeassistant", "update_entity",
+            {"entity_id": sensor_entity},
+            blocking=True
+        )
 
 STORAGE_VERSION = 1
 STORAGE_KEY = "ica_keep_synced_list"
@@ -50,7 +53,7 @@ async def async_setup_entry(hass, entry):
         _LOGGER.error("❌ Ingen todo-entity vald – ICA-integrationen kan inte synka utan en källa.")
         return False
 
- 
+
     # --- Keep → ICA debounce sync ---
     debounce_unsub = None
 
@@ -83,7 +86,7 @@ async def async_setup_entry(hass, entry):
             existing = [r.get("text", "").strip().lower() for r in rows if isinstance(r, dict)]
             space = MAX_ICA_ITEMS - len(rows)
             to_add = [s for s in summaries if s.lower() not in existing][:space]
-            
+
             any_added = False
             for text in to_add:
                 success = await api.add_to_list(list_id, text)
@@ -93,8 +96,8 @@ async def async_setup_entry(hass, entry):
 
             if any_added:
                 await _trigger_sensor_update(hass, list_id)
-                    
-                    
+
+
         except Exception as e:
             _LOGGER.error("💥 Fel vid sync_keep_to_ica: %s", e)
 
@@ -134,13 +137,14 @@ async def async_setup_entry(hass, entry):
                 if debounce_unsub:
                     debounce_unsub()
                 debounce_unsub = async_call_later(hass, DEBOUNCE_SECONDS, schedule_sync)
-      
+
+
         entity_ids = data.get("entity_id", [])
         keep_entity = entry.options.get("todo_entity_id", entry.data.get("todo_entity_id"))
         item = data.get("item")
         if isinstance(item, str):
             item = item.strip().lower()
-        elif isinstance(item, list) and item:   
+        elif isinstance(item, list) and item:
             item = item[0].strip().lower()  # plockar första om flera finns
         else:
             item = None
@@ -180,7 +184,7 @@ async def async_setup_entry(hass, entry):
             if not the_list:
                 _LOGGER.warning("❌ Kunde inte hitta ICA-lista %s", list_id)
                 return
-                
+
             rows = the_list.get("rows", [])
 
             if remove_striked:
@@ -189,8 +193,8 @@ async def async_setup_entry(hass, entry):
                     await api.remove_item(r["id"])
                     _LOGGER.info("🧹 Rensade avbockad vara '%s' från ICA", r.get("text", ""))
                 rows = [r for r in rows if r.get("id") not in [cr["id"] for cr in checked_rows]]
-            
-            
+
+
             if len(rows) >= MAX_ICA_ITEMS:
                 _LOGGER.error("🚫 ICA-listan är full (%s varor). Refresh stoppad.", len(rows))
                 return
@@ -240,6 +244,7 @@ async def async_setup_entry(hass, entry):
 
 
 
+
             # Hämta senaste ändringar från Keep
             recent_adds = hass.data[DOMAIN].setdefault("recent_keep_adds", set())
             recent_removes = hass.data[DOMAIN].setdefault("recent_keep_removes", set())
@@ -254,7 +259,7 @@ async def async_setup_entry(hass, entry):
                 else:
                     _LOGGER.debug("⛔ Hoppar över '%s' – finns i recent_removes eller redan i Keep", item)
 
-            
+
             max_add = MAX_ICA_ITEMS - len(keep_items)
             to_add = to_add[:max_add]
 
